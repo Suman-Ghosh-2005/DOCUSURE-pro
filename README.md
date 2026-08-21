@@ -483,27 +483,3 @@ DOCUSURE PRO is a prototype and does not connect to real government decision sys
 
 ---
 
-## Roadmap
-
-Future production enhancements can include:
-
-- offline-trained anomaly-detection models;
-- additional government schemes and rule sets;
-- broader document-type coverage;
-- production-grade notification channels;
-- stronger deployment observability and operational controls;
-- larger-scale deployment and policy management.
-
----
-
-## Project Status
-
-**Hackathon-ready MVP**
-
-The current implementation demonstrates the complete applicant-to-officer verification workflow from document intake through final decision and audit verification.
-
----
-
-## License
-
-Choose a license appropriate for the final distribution model of the project before wider reuse.
