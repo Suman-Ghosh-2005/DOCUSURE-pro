@@ -18,27 +18,23 @@ import { RuleDefinition } from '@/types/rule.types';
 import { createAdminClient } from '@/lib/supabase/server';
 
 export async function processJobAsync(jobId: string): Promise<void> {
-  setTimeout(() => {
-    executeJobWorker(jobId).catch((err) => {
-      console.error(`[JobWorker Error] Unhandled worker failure for job ${jobId}:`, err);
-    });
-  }, 50);
+  return executeJobWorker(jobId);
 }
 
-async function executeJobWorker(jobId: string): Promise<void> {
-  console.log(`[JobWorker] JOB START jobId=${jobId}`);
+export async function executeJobWorker(jobId: string): Promise<void> {
+  console.log(`[PROD WORKER] JOB START jobId=${jobId}`);
 
   // ATOMIC CLAIM: Prevent duplicate worker invocations from processing the same job
   const claimed = await JobRepository.claimJob(jobId);
   if (!claimed) {
-    console.warn(`[JobWorker] Job ${jobId} already claimed or processing by another worker instance. Skipping.`);
+    console.warn(`[PROD WORKER] Job ${jobId} already claimed or processing by another worker instance. Skipping.`);
     return;
   }
 
-  console.log(`[JobWorker] JOB CLAIM jobId=${jobId}`);
+  console.log(`[PROD WORKER] JOB CLAIM jobId=${jobId}`);
   const job = await JobRepository.getById(jobId);
   if (!job) {
-    console.error(`[JobWorker] Job ${jobId} not found after claiming.`);
+    console.error(`[PROD WORKER] JOB ERROR jobId=${jobId} stage=CLAIM error=Job not found in database`);
     return;
   }
 
@@ -61,6 +57,7 @@ async function executeJobWorker(jobId: string): Promise<void> {
     // -----------------------------------------------------------------
     // STAGE 1: OCR TEXT EXTRACTION
     // -----------------------------------------------------------------
+    console.log(`[PROD WORKER] OCR START jobId=${jobId}`);
     await JobRepository.updateStatus(jobId, 'PROCESSING', 'OCR');
     await ApplicationRepository.updateStatus(applicationId, 'PROCESSING', undefined, 'Running Server-Side OCR');
 
@@ -69,20 +66,32 @@ async function executeJobWorker(jobId: string): Promise<void> {
 
     for (const doc of documents) {
       if (!doc.ocr_text && doc.storage_path) {
-        const { data: fileData, error: downloadErr } = await supabaseAdmin.storage
-          .from('docusure-documents')
-          .download(doc.storage_path);
+        console.log(`[PROD WORKER] OCR DOCUMENT START jobId=${jobId} documentId=${doc.id}`);
+        try {
+          const { data: fileData, error: downloadErr } = await supabaseAdmin.storage
+            .from('docusure-documents')
+            .download(doc.storage_path);
 
-        if (!downloadErr && fileData) {
-          const arrayBuffer = await fileData.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          const ocrResult = await extractTextFromDocumentBuffer(buffer, doc.mime_type || 'application/pdf');
-          await DocumentRepository.updateOCRResult(doc.id, ocrResult.raw_text, ocrResult.ocr_confidence);
+          if (downloadErr) {
+            console.error(`[PROD WORKER] JOB ERROR jobId=${jobId} stage=OCR_DOWNLOAD error=${downloadErr.message}`);
+          }
+
+          if (!downloadErr && fileData) {
+            const arrayBuffer = await fileData.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const ocrResult = await extractTextFromDocumentBuffer(buffer, doc.mime_type || 'application/pdf');
+            await DocumentRepository.updateOCRResult(doc.id, ocrResult.raw_text, ocrResult.ocr_confidence);
+          }
+        } catch (docErr: unknown) {
+          const docErrMsg = docErr instanceof Error ? docErr.message : String(docErr);
+          console.error(`[PROD WORKER] JOB ERROR jobId=${jobId} stage=OCR_DOCUMENT documentId=${doc.id} error=${docErrMsg}`);
         }
+        console.log(`[PROD WORKER] OCR DOCUMENT END jobId=${jobId} documentId=${doc.id}`);
       }
     }
 
     documents = await DocumentRepository.getByApplicationId(applicationId);
+    console.log(`[PROD WORKER] OCR END jobId=${jobId}`);
 
     // Record OCR Audit Event
     await AuditService.recordAuditEvent({
@@ -95,7 +104,7 @@ async function executeJobWorker(jobId: string): Promise<void> {
     // -----------------------------------------------------------------
     // STAGE 2: AI FIELD EXTRACTION (EXACTLY 1 GEMINI REQUEST TOTAL)
     // -----------------------------------------------------------------
-    console.log(`[JobWorker] AI STAGE START jobId=${jobId}`);
+    console.log(`[PROD WORKER] AI START jobId=${jobId}`);
     await JobRepository.updateStatus(jobId, 'PROCESSING', 'AI_EXTRACTION');
     await ApplicationRepository.updateStatus(applicationId, 'PROCESSING', undefined, 'Running AI Field Extraction');
 
@@ -108,7 +117,7 @@ async function executeJobWorker(jobId: string): Promise<void> {
     });
 
     if (uncachedDocs.length > 0) {
-      console.log(`[JobWorker AI] Executing 1 Gemini request for ${uncachedDocs.length} uncached documents (jobId=${jobId})`);
+      console.log(`[PROD WORKER] AI Executing 1 Gemini request for ${uncachedDocs.length} uncached documents (jobId=${jobId})`);
       const inputPayload = uncachedDocs.map((doc) => ({
         id: doc.id,
         slot_type: doc.slot_type,
@@ -142,10 +151,10 @@ async function executeJobWorker(jobId: string): Promise<void> {
         await DocumentRepository.updateStatus(docResult.document_id, 'EXTRACTED');
       }
     } else {
-      console.log(`[JobWorker AI] Using cached AI extraction fields. 0 Gemini requests sent.`);
+      console.log(`[PROD WORKER] AI Using cached extraction fields. 0 Gemini requests sent.`);
     }
 
-    console.log(`[JobWorker] AI STAGE END jobId=${jobId}`);
+    console.log(`[PROD WORKER] AI END jobId=${jobId}`);
 
     // Record AI Extraction Audit Event
     const freshExtractedFieldsForAudit = await ExtractedFieldRepository.getByApplicationId(applicationId);
@@ -187,6 +196,8 @@ async function executeJobWorker(jobId: string): Promise<void> {
     if (dbVerificationPayload.length > 0) {
       await VerificationRepository.createBatch(dbVerificationPayload);
     }
+
+    console.log(`[PROD WORKER] VERIFICATION END jobId=${jobId}`);
 
     // Record Verification Audit Event
     await AuditService.recordAuditEvent({
@@ -249,6 +260,8 @@ async function executeJobWorker(jobId: string): Promise<void> {
       'Eligibility Evaluation Complete'
     );
 
+    console.log(`[PROD WORKER] ELIGIBILITY END jobId=${jobId}`);
+
     // Record Eligibility Audit Event
     await AuditService.recordAuditEvent({
       applicationId,
@@ -258,11 +271,10 @@ async function executeJobWorker(jobId: string): Promise<void> {
     });
 
     // -----------------------------------------------------------------
-    // STAGE 5: ML RISK & ANOMALY INTELLIGENCE (PHASE 9)
+    // STAGE 5: ML RISK INTELLIGENCE
     // -----------------------------------------------------------------
-    console.log(`[JobWorker] RISK STAGE START jobId=${jobId}`);
     await JobRepository.updateStatus(jobId, 'PROCESSING', 'RISK');
-    await ApplicationRepository.updateStatus(applicationId, 'PROCESSING', undefined, 'Running ML Risk & Anomaly Analysis');
+    await ApplicationRepository.updateStatus(applicationId, 'PROCESSING', undefined, 'Running ML Risk Analysis');
 
     const freshRuleResults = await RuleRepository.getRuleResultsByApplicationId(applicationId);
     const freshExceptions = await ExceptionRepository.getByApplicationId(applicationId);
@@ -284,7 +296,7 @@ async function executeJobWorker(jobId: string): Promise<void> {
       prediction: riskPrediction,
     });
 
-    console.log(`[JobWorker] RISK STAGE END jobId=${jobId} (Score: ${riskPrediction.risk_score}, Level: ${riskPrediction.risk_level})`);
+    console.log(`[PROD WORKER] RISK END jobId=${jobId}`);
 
     // Record Risk Audit Event
     await AuditService.recordAuditEvent({
@@ -296,17 +308,15 @@ async function executeJobWorker(jobId: string): Promise<void> {
 
     // STAGE 6: COMPLETED
     await JobRepository.updateStatus(jobId, 'COMPLETED', 'COMPLETED', null);
-    console.log(`[JobWorker] JOB COMPLETE jobId=${jobId}`);
+    console.log(`[PROD WORKER] JOB COMPLETE jobId=${jobId}`);
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : 'Job execution failed';
-    console.error(`[JobWorker] Error processing job ${jobId}:`, errorMsg);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`[PROD WORKER] JOB ERROR jobId=${jobId} stage=WORKER_EXECUTION error=${errorMsg}`);
 
     if (job.attempts < 1) {
-      console.log(`[JobWorker] Retrying job ${jobId} (Attempt ${job.attempts + 1})...`);
+      console.log(`[PROD WORKER] Retrying job ${jobId} (Attempt ${job.attempts + 1})...`);
       await JobRepository.updateStatus(jobId, 'QUEUED', 'OCR', errorMsg);
-      setTimeout(() => {
-        executeJobWorker(jobId).catch((err) => console.error('[JobWorker Retry Error]:', err));
-      }, 1000);
+      executeJobWorker(jobId).catch((err) => console.error(`[PROD WORKER] JOB ERROR jobId=${jobId} stage=RETRY error=`, err));
     } else {
       await JobRepository.updateStatus(jobId, 'FAILED', 'FAILED', errorMsg);
     }

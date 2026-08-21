@@ -1,7 +1,10 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { ApplicationRepository } from '@/repositories/application.repository';
 import { JobRepository } from '@/repositories/job.repository';
-import { processJobAsync } from '@/services/jobs/worker.service';
+import { executeJobWorker } from '@/services/jobs/worker.service';
+
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
 
 let jobCreationCounter = 0;
 
@@ -13,7 +16,7 @@ export async function POST(
     jobCreationCounter++;
     const { applicationId } = await context.params;
 
-    console.log(`[DOCUSURE JOB] job creation request #${jobCreationCounter} applicationId=${applicationId}`);
+    console.log(`[PROD WORKER] API Request #${jobCreationCounter} for applicationId=${applicationId}`);
 
     const application = await ApplicationRepository.getById(applicationId);
 
@@ -24,10 +27,20 @@ export async function POST(
       );
     }
 
-    // Check for existing active processing job to prevent duplicate active jobs (BUG 4)
+    // Check for existing active processing job to prevent duplicate active jobs
     const activeJob = await JobRepository.getActiveByApplicationId(applicationId);
     if (activeJob) {
-      console.log(`[DOCUSURE JOB] Active job ${activeJob.id} already exists for ${applicationId}. Reusing active job.`);
+      console.log(`[PROD WORKER] Active job ${activeJob.id} already exists for ${applicationId}. Reusing active job.`);
+      
+      // Ensure worker executes if previously queued/stalled
+      after(async () => {
+        try {
+          await executeJobWorker(activeJob.id);
+        } catch (err) {
+          console.error(`[PROD WORKER] JOB ERROR jobId=${activeJob.id} stage=REUSE_AFTER error=`, err);
+        }
+      });
+
       return NextResponse.json({
         data: {
           jobId: activeJob.id,
@@ -50,10 +63,16 @@ export async function POST(
       );
     }
 
-    console.log(`[DOCUSURE JOB] Created QUEUED job ${job.id} for ${applicationId}`);
+    console.log(`[PROD WORKER] Created QUEUED job ${job.id} for ${applicationId}`);
 
-    // Launch asynchronous worker off the HTTP request thread
-    await processJobAsync(job.id);
+    // Schedule background worker post-response using Next.js after() (supported by Vercel Serverless)
+    after(async () => {
+      try {
+        await executeJobWorker(job.id);
+      } catch (err) {
+        console.error(`[PROD WORKER] JOB ERROR jobId=${job.id} stage=POST_RESPONSE_AFTER error=`, err);
+      }
+    });
 
     return NextResponse.json(
       {
@@ -71,7 +90,7 @@ export async function POST(
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Failed to create job';
-    console.error('[Job Creation API Error]:', error);
+    console.error('[PROD WORKER] API Exception:', error);
     return NextResponse.json(
       { data: null, error: { message, code: 'JOB_CREATION_ERROR' } },
       { status: 500 }
