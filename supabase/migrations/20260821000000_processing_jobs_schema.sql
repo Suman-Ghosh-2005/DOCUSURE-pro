@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
   status          VARCHAR(50) NOT NULL DEFAULT 'QUEUED'
                     CHECK (status IN ('QUEUED', 'PROCESSING', 'COMPLETED', 'FAILED')),
   current_stage   VARCHAR(50) NOT NULL DEFAULT 'OCR'
-                    CHECK (current_stage IN ('OCR', 'AI_EXTRACTION', 'VERIFICATION', 'ELIGIBILITY', 'COMPLETED', 'FAILED')),
+                    CHECK (current_stage IN ('OCR', 'AI_EXTRACTION', 'VERIFICATION', 'ELIGIBILITY', 'RISK', 'COMPLETED', 'FAILED')),
   attempts        INTEGER NOT NULL DEFAULT 0,
   error_message   TEXT,
   created_at      TIMESTAMPTZ DEFAULT NOW(),
