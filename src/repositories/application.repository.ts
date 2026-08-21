@@ -140,8 +140,9 @@ export class ApplicationRepository {
     id: string,
     status: ApplicationStatus,
     routingReason?: string,
-    recommendedAction?: string
+    _recommendedAction?: string
   ): Promise<boolean> {
+    let dbSuccess = false;
     try {
       const supabase = this.getClient();
       const updateData: Record<string, unknown> = {
@@ -149,7 +150,6 @@ export class ApplicationRepository {
         updated_at: new Date().toISOString(),
       };
       if (routingReason) updateData.routing_reason = routingReason;
-      if (recommendedAction) updateData.recommended_action = recommendedAction;
 
       const { error } = await supabase
         .from('applications')
@@ -158,9 +158,13 @@ export class ApplicationRepository {
 
       if (error) {
         console.error('[ApplicationRepository.updateStatus] DB error:', error);
+        dbSuccess = false;
+      } else {
+        dbSuccess = true;
       }
     } catch (e) {
       console.warn('[ApplicationRepository.updateStatus] Exception:', e);
+      dbSuccess = false;
     }
 
     // Update in-memory fallback store if present
@@ -172,6 +176,6 @@ export class ApplicationRepository {
       }
     });
 
-    return true;
+    return dbSuccess;
   }
 }

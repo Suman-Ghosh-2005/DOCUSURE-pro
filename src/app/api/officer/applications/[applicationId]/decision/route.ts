@@ -34,19 +34,7 @@ export async function POST(
 
     const { decision, notes, rejection_reasons } = validationResult.data;
 
-    // 1. Create Officer Review Record
-    const reviewRecord = await ReviewRepository.create({
-      application_id: applicationId,
-      decision,
-      notes,
-      rejection_reasons,
-    });
-
-    if (!reviewRecord) {
-      throw new Error('Failed to record officer review decision');
-    }
-
-    // 2. Map Officer Decision to Application Status
+    // 1. Map Officer Decision to Application Status
     let targetStatus: ApplicationStatus = 'APPROVED';
     let routingReason = '';
 
@@ -61,14 +49,33 @@ export async function POST(
       routingReason = `Correction requested by officer. Notes: ${notes}`;
     }
 
-    await ApplicationRepository.updateStatus(
+    // 2. Update Application Status in Database
+    const updated = await ApplicationRepository.updateStatus(
       applicationId,
       targetStatus,
-      routingReason,
-      'Officer Decision Completed'
+      routingReason
     );
 
-    // 3. Record Cryptographic Officer Decision Audit Event
+    if (!updated) {
+      return NextResponse.json(
+        { data: null, error: { message: 'Failed to update application status in database', code: 'DB_UPDATE_ERROR' } },
+        { status: 500 }
+      );
+    }
+
+    // 3. Create Officer Review Record
+    const reviewRecord = await ReviewRepository.create({
+      application_id: applicationId,
+      decision,
+      notes,
+      rejection_reasons,
+    });
+
+    if (!reviewRecord) {
+      throw new Error('Failed to record officer review decision');
+    }
+
+    // 4. Record Cryptographic Officer Decision Audit Event
     await AuditService.recordAuditEvent({
       applicationId,
       eventType: 'OFFICER_DECISION',
