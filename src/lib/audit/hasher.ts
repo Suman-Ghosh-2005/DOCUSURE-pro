@@ -31,8 +31,16 @@ export function computeEventHash(params: {
 }): string {
   const { eventType, eventData, createdAt, previousHash } = params;
 
-  const canonicalData = canonicalSerialize(eventData);
-  const payloadToHash = `${eventType}:${canonicalData}:${createdAt}:${previousHash || ''}`;
+  // Normalize timestamp to standard ISO 8601 string format (ending in Z)
+  const normalizedDate = new Date(createdAt).toISOString();
 
-  return crypto.createHash('sha256').update(payloadToHash).digest('hex');
+  const canonicalData = canonicalSerialize(eventData);
+
+  const payloadToHash =
+    `${eventType}:${canonicalData}:${normalizedDate}:${previousHash || ''}`;
+
+  return crypto
+    .createHash('sha256')
+    .update(payloadToHash)
+    .digest('hex');
 }
